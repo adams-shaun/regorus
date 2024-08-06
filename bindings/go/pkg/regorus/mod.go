@@ -1,6 +1,6 @@
 package regorus
 
-// #cgo LDFLAGS: -L ../../../../target/release -lregorus_ffi
+// #cgo LDFLAGS: -L ../../../target/release -lregorus_ffi
 // #include "../../../ffi/regorus.h"
 import "C"
 import (
@@ -73,7 +73,6 @@ func (e *Engine) GetPolicies() (string, error) {
 	return C.GoString(result.output), nil
 }
 
-
 func (e *Engine) AddDataJson(data string) error {
 	data_c := C.CString(data)
 	defer C.free(unsafe.Pointer(data_c))
@@ -96,6 +95,21 @@ func (e *Engine) AddDataFromJsonFile(path string) error {
 		return fmt.Errorf("%s", C.GoString(result.error_message))
 	}
 	return nil
+}
+
+func (e *Engine) SetInputEvalRule(input, rule string) (string, string, error) {
+	input_c := C.CString(input)
+	rule_c := C.CString(rule)
+	defer C.free(unsafe.Pointer(rule_c))
+	defer C.free(unsafe.Pointer(input_c))
+
+	result := C.regorus_engine_set_input_eval_rule(e.e, input_c, rule_c)
+	defer C.regorus_result_drop(result)
+	if result.status != C.RegorusStatusOk {
+		return "", "", fmt.Errorf("%s", C.GoString(result.error_message))
+	}
+
+	return C.GoString(result.action), C.GoString(result.rule), nil
 }
 
 func (e *Engine) SetInputJson(input string) error {

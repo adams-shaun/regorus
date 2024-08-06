@@ -2,8 +2,28 @@
 // Licensed under the MIT License.
 
 use anyhow::{anyhow, bail, Result};
+use serde_json::to_string;
 use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::hash::Hash;
+use std::hash::{DefaultHasher, Hasher};
+use std::os::raw::{c_char, c_void};
+
+#[repr(C)]
+pub struct RegorusInput {
+    /// Status
+    status: RegorusStatus,
+
+    /// Output produced by the call.
+    /// Owned by Rust.
+    output: *mut c_char,
+
+    action: *mut c_char,
+    rule: *mut c_char,
+
+    /// Errors produced by the call.
+    /// Owned by Rust.
+    error_message: *mut c_char,
+}
 
 /// Status of a call on `RegorusEngine`.
 #[repr(C)]
@@ -26,6 +46,10 @@ pub struct RegorusResult {
     /// Output produced by the call.
     /// Owned by Rust.
     output: *mut c_char,
+    action: *mut c_char,
+    rule: *mut c_char,
+
+    input_value: *mut c_void,
 
     /// Errors produced by the call.
     /// Owned by Rust.
@@ -60,11 +84,17 @@ fn to_regorus_result(r: Result<()>) -> RegorusResult {
         Ok(()) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: std::ptr::null_mut(),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => RegorusResult {
             status: RegorusStatus::RegorusStatusError,
             output: std::ptr::null_mut(),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: to_c_str(format!("{e}")),
         },
     }
@@ -75,11 +105,17 @@ fn to_regorus_string_result(r: Result<String>) -> RegorusResult {
         Ok(s) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: to_c_str(s),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => RegorusResult {
             status: RegorusStatus::RegorusStatusError,
             output: std::ptr::null_mut(),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: to_c_str(format!("{e}")),
         },
     }
@@ -102,6 +138,12 @@ pub extern "C" fn regorus_result_drop(r: RegorusResult) {
         }
         if !r.output.is_null() {
             let _ = CString::from_raw(r.output);
+        }
+        if !r.action.is_null() {
+            let _ = CString::from_raw(r.action);
+        }
+        if !r.rule.is_null() {
+            let _ = CString::from_raw(r.rule);
         }
     }
 }
@@ -281,6 +323,171 @@ pub extern "C" fn regorus_engine_eval_query(
         Ok(out) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: to_c_str(out),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
+            error_message: std::ptr::null_mut(),
+        },
+        Err(e) => to_regorus_result(Err(e)),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn regorus_parse_input(input: *const c_char) -> RegorusResult {
+    if let Ok(inp) = from_c_str("input", input) {
+        let input_str = inp;
+        let input_val = Box::into_raw(Box::new(regorus::Value::from_json_str(&input_str).unwrap()));
+        // println!("{}", Box::from_raw(input_val).to_string());
+
+        // match input_val {
+        //     Ok(mut val) =>
+        RegorusResult {
+            status: RegorusStatus::RegorusStatusOk,
+            output: std::ptr::null_mut(),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: input_val as *mut c_void,
+            error_message: std::ptr::null_mut(),
+            // },
+            // Err(_) => to_regorus_result(Err(anyhow::Error::msg("bad"))),
+        }
+    } else {
+        to_regorus_result(Err(anyhow::Error::msg("bad")))
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn regorus_engine_set_input_eval_rule2(
+    engine: *mut RegorusEngine,
+    input: *const c_void,
+    rule: *const c_char,
+) -> RegorusResult {
+    // let data: &mut State = unsafe { &mut *(data as *mut State) };
+    let input_obj: &mut regorus::Value = unsafe { &mut *(input as *mut regorus::Value) };
+    // println!("{}", input_obj.to_string());
+
+    // use serde_json::Serializer;
+    let output = || -> Result<regorus::Value> {
+        to_ref(&engine)?.engine.set_input(input_obj.clone());
+        to_ref(&engine)?.engine.eval_rule(from_c_str("rule", rule)?)
+    }();
+
+    let action_: String;
+    let rule_: String;
+
+    let action_val = regorus::Value::from("action");
+    let rule_val = regorus::Value::from("rule");
+    let default_str = regorus::Value::from("");
+
+    if let Ok(out) = &output {
+        // println!("output {}", out.to_string());
+
+        if let regorus::Value::Object(map) = out {
+            let act = map.get(&action_val).unwrap_or(&default_str).to_string();
+            if act.len() > 0 {
+                action_ = act[1..act.len() - 1].to_string();
+            } else {
+                action_ = act
+            }
+
+            let rl = map.get(&rule_val).unwrap_or(&default_str).to_string();
+            if rl.len() > 0 {
+                rule_ = rl[1..rl.len() - 1].to_string();
+            } else {
+                rule_ = rl
+            }
+        } else {
+            action_ = "".to_string();
+            rule_ = "".to_string();
+        }
+    } else {
+        action_ = "".to_string();
+        rule_ = "".to_string();
+    }
+
+    match output {
+        Ok(_) => RegorusResult {
+            status: RegorusStatus::RegorusStatusOk,
+            output: std::ptr::null_mut(),
+            action: to_c_str(action_),
+            rule: to_c_str(rule_),
+            input_value: std::ptr::null_mut(),
+            error_message: std::ptr::null_mut(),
+        },
+        Err(e) => to_regorus_result(Err(e)),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn regorus_engine_set_input_eval_rule(
+    engine: *mut RegorusEngine,
+    input: *const c_char,
+    rule: *const c_char,
+) -> RegorusResult {
+    static mut last_hash: u64 = 0;
+
+    let input_str = from_c_str("input", input).unwrap();
+    let mut hasher = DefaultHasher::new();
+    input_str.hash(&mut hasher);
+    let this_hash = hasher.finish();
+
+    let mut parse_input = false;
+    unsafe {
+        if last_hash == 0 || this_hash != last_hash {
+            parse_input = true;
+            last_hash = this_hash;
+        }
+    }
+    // use serde_json::Serializer;
+    let output = || -> Result<regorus::Value> {
+        if parse_input {
+            to_ref(&engine)?
+                .engine
+                .set_input(regorus::Value::from_json_str(&input_str)?);
+        }
+        to_ref(&engine)?.engine.eval_rule(from_c_str("rule", rule)?)
+    }();
+
+    let action_: String;
+    let rule_: String;
+
+    let action_val = regorus::Value::from("action");
+    let rule_val = regorus::Value::from("rule");
+    let default_str = regorus::Value::from("");
+
+    if let Ok(out) = &output {
+        // println!("output {}", out.to_string());
+
+        if let regorus::Value::Object(map) = out {
+            let act = map.get(&action_val).unwrap_or(&default_str).to_string();
+            if act.len() > 0 {
+                action_ = act[1..act.len() - 1].to_string();
+            } else {
+                action_ = act
+            }
+
+            let rl = map.get(&rule_val).unwrap_or(&default_str).to_string();
+            if rl.len() > 0 {
+                rule_ = rl[1..rl.len() - 1].to_string();
+            } else {
+                rule_ = rl
+            }
+        } else {
+            action_ = "".to_string();
+            rule_ = "".to_string();
+        }
+    } else {
+        action_ = "".to_string();
+        rule_ = "".to_string();
+    }
+
+    match output {
+        Ok(_) => RegorusResult {
+            status: RegorusStatus::RegorusStatusOk,
+            output: std::ptr::null_mut(),
+            action: to_c_str(action_),
+            rule: to_c_str(rule_),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => to_regorus_result(Err(e)),
@@ -306,6 +513,9 @@ pub extern "C" fn regorus_engine_eval_rule(
         Ok(out) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: to_c_str(out),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => to_regorus_result(Err(e)),
@@ -343,6 +553,9 @@ pub extern "C" fn regorus_engine_get_coverage_report(engine: *mut RegorusEngine)
         Ok(out) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: to_c_str(out),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => to_regorus_result(Err(e)),
@@ -367,6 +580,9 @@ pub extern "C" fn regorus_engine_get_coverage_report_pretty(
         Ok(out) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: to_c_str(out),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => to_regorus_result(Err(e)),
@@ -414,6 +630,9 @@ pub extern "C" fn regorus_engine_take_prints(engine: *mut RegorusEngine) -> Rego
         Ok(out) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: to_c_str(out),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => to_regorus_result(Err(e)),
@@ -431,6 +650,9 @@ pub extern "C" fn regorus_engine_get_ast_as_json(engine: *mut RegorusEngine) -> 
         Ok(out) => RegorusResult {
             status: RegorusStatus::RegorusStatusOk,
             output: to_c_str(out),
+            action: std::ptr::null_mut(),
+            rule: std::ptr::null_mut(),
+            input_value: std::ptr::null_mut(),
             error_message: std::ptr::null_mut(),
         },
         Err(e) => to_regorus_result(Err(e)),

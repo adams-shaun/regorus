@@ -6,6 +6,7 @@ mod arrays;
 mod bitwise;
 pub mod comparison;
 mod conversions;
+mod netcidr;
 
 #[cfg(feature = "crypto")]
 mod crypto;
@@ -68,6 +69,7 @@ lazy_static! {
 	sets::register(&mut m);
 	objects::register(&mut m);
 	strings::register(&mut m);
+	netcidr::register(&mut m);
 	
 	#[cfg(feature = "regex")]
 	regex::register(&mut m);

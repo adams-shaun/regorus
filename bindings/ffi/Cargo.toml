@@ -22,3 +22,6 @@ custom_allocator = []
 [build-dependencies]
 cbindgen = "0.26.0"
 csbindgen = "1.9.0"
+
+[profile.release]
+debug = true
