@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use anyhow::{anyhow, bail, Result};
-use serde_json::to_string;
 use std::ffi::{CStr, CString};
 use std::hash::Hash;
 use std::hash::{DefaultHasher, Hasher};
@@ -167,6 +166,15 @@ pub extern "C" fn regorus_engine_clone(engine: *mut RegorusEngine) -> *mut Regor
     match to_ref(&engine) {
         Ok(e) => Box::into_raw(Box::new(e.clone())),
         _ => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn regorus_value_drop(value: *const c_void) {
+    let input_obj: &mut regorus::Value = unsafe { &mut *(value as *mut regorus::Value) };
+
+    unsafe {
+        let _ = Box::from_raw(std::ptr::from_mut(input_obj));
     }
 }
 
